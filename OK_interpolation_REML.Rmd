@@ -1,0 +1,367 @@
+---
+title: "Ordinary Kriging with REML"
+author: "Laura Delgado Bejarano"
+date: "2024-10-22"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# --- Directory settings (edit these paths as needed) ---
+WORK_DIR <- "G:/Mi unidad/02_Maestria/01_Projeito"  # <- edit if needed
+WORK_DIR <- normalizePath(WORK_DIR, winslash = "/", mustWork = TRUE)  # standardize slashes on Windows
+knitr::opts_knit$set(root.dir = WORK_DIR)  # make this the working dir for all chunks
+```
+
+# Cleaning the space
+
+```{r,cleaning}
+rm(list = ls())   # Clear all objects
+graphics.off()    # Close graphics devices
+cat("\014")       # Clear console
+
+```
+
+# Libraries 
+Installing and loading the libraries that are going to be used 
+
+```{r,libraries,echo=FALSE}
+# Libraries: install if missing, then load
+pkgs <- c(
+  "sp", "gstat", "ggspatial", "raster", "ggplot2", "gridExtra",
+  "ggstar", "mapview", "terra", "sf", "akima", "automap",
+  "paletteer", "viridis", "hydroGOF","geoR"
+)
+
+# Install any missing packages (first run on a new machine)
+to_install <- pkgs[!(pkgs %in% rownames(installed.packages()))]
+if (length(to_install)) {
+  install.packages(to_install, repos = "https://cloud.r-project.org")
+}
+
+# Load all required packages, suppressing startup messages
+invisible(lapply(pkgs, function(p) {
+  suppressPackageStartupMessages(library(p, character.only = TRUE))
+}))
+
+```
+
+# Loading the data 
+
+## Load polygon of the area of study
+
+```{r,poly}
+poly <- st_read("00_Cartobase/01_Contornos/01_Paulinia/Contorno_Paulinia.shp") 
+plot(poly)
+poly_sf <- st_zm(poly)
+```
+
+## Create a clean and empty grid to interpolate 
+
+```{r,grid}
+# Create base raster at 5 m resolution and convert to grid
+r  <- raster(poly_sf, res = 5)         # base grid resolution (meters)
+rp <- rasterize(poly_sf, r, 0)         # empty raster within polygon
+grid <- as(rp, "SpatialPixelsDataFrame")
+plot(grid)
+
+proj4string(grid) <-CRS("+init=epsg:32723")
+proj4string(grid)
+
+```
+
+## Load the csv with the data
+Here is important to know if the csv are separed by , or ; and change it if necessary
+
+
+```{r,Data}
+#cargas los datos
+original = data.frame(read.csv(file = "02_Cenarios_amostrais/04_CSVs/Paulinia_0.2am_cada1ha.csv",
+                               header = TRUE, sep = ';'))
+head(original)
+dados = original[,c(7,8,6)] # select columns of interest (x,y,z)
+head(dados)
+dados = na.omit(dados)
+names(dados) = c( "x", "y", "Ar") # ensure names x, y, variable 
+sp::coordinates(dados) = ~x+y 
+sp::bubble(dados, "Ar") 
+```
+## Geostatistics 
+
+Adjust the experimental semivariogram - first using MoM to get the initial values to use geoR in the REML model for 50 - 100 samples (Kerry and Oliver, 2007)
+
+```{r,semivar_mom}
+# Experimental variogram (MoM) and geodata prep
+Variable<-"Ar"
+data_geo <- as.geodata(dados, data.col = which(names(dados) == Variable))
+
+# Build gstat object for the target variable
+g = gstat(formula = Ar ~ 1, data=dados) #Change name of variable 
+# Useful distance helpers to design variogram cutoff/lag width
+C<-print(max(dist(dados@coords))/2);C #Cutoff
+W<-print(min(dist(dados@coords)));W #Width
+var_exp = gstat::variogram(g, cutoff=C, width=89, cressie=F) 
+plot(var_exp)
+
+# Initial MoM fits (keep if you want to compare visually)
+fit.sph1   <- fit.variogram(var_exp, vgm(11800, "Sph", 300, 200))
+fit.exp1   <- fit.variogram(var_exp, vgm(11800, "Exp", 300, 200))
+fit.gauss1 <- fit.variogram(var_exp, vgm(11800, "Gau", 300, 200))
+
+plot(var_exp, fit.sph1)
+plot(var_exp, fit.exp1)
+plot(var_exp, fit.gauss1)
+
+
+# Cross-validation per model
+
+# Spherical model CV
+xvalid.sph <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.sph1)
+xvalid_df_sp <- as.data.frame(xvalid.sph)
+lm_sph <- lm(xvalid.sph$var1.pred ~ xvalid.sph$observed)
+
+# Metrics
+r2_sph   <- summary(lm_sph)$r.squared         # R²
+rmse_sph <- hydroGOF::rmse(xvalid.sph$var1.pred, xvalid.sph$observed)  # RMSE
+slope_sph <- lm_sph$coefficients[2]           # regression slope
+
+# Exponential model CV
+xvalid.exp <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.exp1)
+xvalid_df_ex <- as.data.frame(xvalid.exp)
+lm_exp <- lm(xvalid.exp$var1.pred ~ xvalid.exp$observed)
+
+# Metrics
+r2_exp   <- summary(lm_exp)$r.squared
+rmse_exp <- hydroGOF::rmse(xvalid.exp$var1.pred, xvalid.exp$observed)
+slope_exp <- lm_exp$coefficients[2]
+
+# Gaussian model CV
+xvalid.gau <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.gauss1)
+xvalid_df_ga <- as.data.frame(xvalid.gau)
+lm_gau <- lm(xvalid.gau$var1.pred ~ xvalid.gau$observed)
+
+# Metrics
+r2_gau   <- summary(lm_gau)$r.squared
+rmse_gau <- hydroGOF::rmse(xvalid.gau$var1.pred, xvalid.gau$observed)
+slope_gau <- lm_gau$coefficients[2]
+
+
+# Build summary table for the CV performance
+
+df.r2    <- data.frame(r2_sph, r2_exp, r2_gau)          # R² per model
+df.rmse  <- data.frame(rmse_sph, rmse_exp, rmse_gau)    # RMSE per model
+df.slope <- data.frame(slope_sph, slope_exp, slope_gau) # slope per model
+
+# Combine into a single table
+temp <- data.frame(cbind(t(df.r2), t(df.rmse), t(df.slope)))
+colnames(temp) <- c("R2", "RMSE", "slope")
+
+# Clean row names (remove the 'r2_' prefix)
+rnames <- gsub("r2_", "", rownames(temp))
+rownames(temp) <- rnames
+
+print(temp)
+```
+
+## REML semivariogram
+Based on the best model in MoM we use the initial parameters to adjust the REML kriging - When this adjustment is done the lags are not fitted to the model
+It is just a visual guide but it isnt equal to the MoM adjustment
+
+```{r,semivar_Reml}
+# ---------------------------
+# Selected model (from MoM)
+# ---------------------------
+co    <- fit.gauss1$psill[1]      # nugget from MoM spherical fit
+psill <- fit.gauss1$psill[2]      # partial sill (MoM)
+sill  <- fit.gauss1 + co             # total sill
+range <- fit.gauss1$range[2]      # range (MoM)
+
+# ------------------------------------------
+# REML fit (geoR) -> convert to gstat::vgm
+# ------------------------------------------
+
+# Spherical model (REML)
+fit_sph <- geoR::likfit(
+  data_geo,
+  ini.cov.pars = c(psill, range),  # c(sigmasq, phi)
+  nugget       = co,
+  fix.nugget   = FALSE,
+  lik.method   = "REML",
+  cov.model    = "spherical"
+)
+
+fit.sph <- vgm(
+  psill  = fit_sph$sigmasq,   # partial sill (sigmasq)
+  model  = "Sph",             # Model: Spherical
+  range  = fit_sph$phi,       # range (phi)
+  nugget = fit_sph$tausq      # nugget (tausq)
+)
+
+plot(var_exp, fit.sph)
+
+# Exponential model (REML)
+fit_exp <- geoR::likfit(
+  data_geo,
+  ini.cov.pars = c(psill, range),  # c(sigmasq, phi)
+  nugget       = co,
+  fix.nugget   = FALSE,
+  lik.method   = "REML",
+  cov.model    = "exponential"
+)
+
+fit.exp <- vgm(
+  psill  = fit_exp$sigmasq,   # partial sill
+  model  = "Exp",             # Model: Exponential
+  range  = fit_exp$phi,       # range
+  nugget = fit_exp$tausq      # nugget
+)
+
+plot(var_exp, fit.exp)
+
+# Gaussian model (REML)
+fit_gau <- geoR::likfit(
+  data_geo,
+  ini.cov.pars = c(psill, range),  # c(sigmasq, phi)
+  nugget       = co,
+  fix.nugget   = FALSE,
+  lik.method   = "REML",
+  cov.model    = "gaussian"
+)
+
+fit.gauss <- vgm(
+  psill  = fit_gau$sigmasq,   # partial sill
+  model  = "Gau",             # Model: Gaussian
+  range  = fit_gau$phi,       # range
+  nugget = fit_gau$tausq      # nugget
+)
+
+plot(var_exp, fit.gauss)
+
+```
+## LOOCV
+Cross validation to select the model to kriging
+
+```{r,cv_Reml}
+# -------------------------------
+# Cross-validation to select model
+# -------------------------------
+
+# Spherical model CV
+xvalid.sph <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.sph)
+xvalid_df_sp <- as.data.frame(xvalid.sph)
+lm_sph <- lm(xvalid.sph$var1.pred ~ xvalid.sph$observed)
+
+# Metrics
+r2_sph    <- summary(lm_sph)$r.squared      # R²
+rmse_sph  <- hydroGOF::rmse(xvalid.sph$var1.pred, xvalid.sph$observed)  # RMSE
+slope_sph <- coef(lm_sph)[2]                # regression slope
+
+# Exponential model CV
+xvalid.exp <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.exp)
+xvalid_df_ex <- as.data.frame(xvalid.exp)
+lm_exp <- lm(xvalid.exp$var1.pred ~ xvalid.exp$observed)
+
+# Metrics
+r2_exp    <- summary(lm_exp)$r.squared
+rmse_exp  <- hydroGOF::rmse(xvalid.exp$var1.pred, xvalid.exp$observed)
+slope_exp <- coef(lm_exp)[2]
+
+# Gaussian model CV
+xvalid.gau <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.gauss)
+xvalid_df_ga <- as.data.frame(xvalid.gau)
+lm_gau <- lm(xvalid.gau$var1.pred ~ xvalid.gau$observed)
+
+# Metrics
+r2_gau    <- summary(lm_gau)$r.squared
+rmse_gau  <- hydroGOF::rmse(xvalid.gau$var1.pred, xvalid.gau$observed)
+slope_gau <- coef(lm_gau)[2]
+
+# --------------------------------------------
+# Build CV summary table and pick the best fit
+# --------------------------------------------
+
+cv_tbl <- data.frame(
+  Model = c("Sph", "Exp", "Gau"),
+  R2    = c(r2_sph, r2_exp, r2_gau),
+  RMSE  = c(rmse_sph, rmse_exp, rmse_gau),
+  Slope = c(slope_sph, slope_exp, slope_gau),
+  stringsAsFactors = FALSE
+)
+
+# Print table sorted by RMSE (ascending = better)
+cv_tbl_sorted <- cv_tbl[order(cv_tbl$RMSE), ]
+print(cv_tbl_sorted, row.names = FALSE)
+
+
+```
+
+
+Taking theorical parameters - it has to change for the best model
+
+```{r}
+# Extract nugget, partial sill, total sill, and range
+nugget        <- fit.gauss$psill[1]
+partial_sill  <- fit.gauss$psill[2]
+sill          <- partial_sill + nugget
+range         <- fit.gauss$range[2]
+
+# Spatial Dependence Index (SDI) as percentage of partial sill over total sill
+SDI <- (partial_sill / sill) * 100
+
+# Classify SDI into categories
+Class <- ifelse(SDI < 20, "Very low",
+         ifelse(SDI < 40, "Low",
+         ifelse(SDI < 60, "Medium",
+         ifelse(SDI < 80, "High", "Very high"))))
+
+# Build summary table (note: mixing numeric and character will coerce to character)
+table_params <- data.frame(
+  Parameter = c("Nugget", "Sill", "Range", "SDI%", "Class"),
+  Value     = c(nugget, sill, range, SDI, Class),
+  stringsAsFactors = FALSE
+)
+
+table_params
+```
+
+# Kriging
+
+Doing the kriging with the selected model
+
+
+```{r,ok}
+### Interpolacao por krigagem 
+proj4string(dados) <- CRS("+init=epsg:32723")
+proj4string(dados)
+
+mapa = krige(Ar ~ 1, dados, grid, model = fit.gauss)
+plot(mapa)
+
+
+```
+Exporting the raster
+
+```{r,export}
+mapaRaster <- raster(mapa)
+
+filename<-'13_GitHub/Ar_OK_0.2cada1_Paulinia_REML.tiff'
+writeRaster(mapaRaster, filename , format = 'GTiff', overwrite = T)
+```
+
+Graphic with ggplot
+
+```{r,plotting,fig.width=7, fig.height=6}
+ggplot() + 
+  geom_raster(data = as.data.frame(mapa), aes(fill = var1.pred, x = x, y = y)) +
+  scale_fill_viridis_c() +
+    annotation_north_arrow(which_north = "grid",height = unit(1, "cm"),
+                         width = unit(0.9, "cm"),
+                         pad_x = unit(0.5, "cm"),
+                         pad_y = unit(10, "cm"),
+                         style=north_arrow_fancy_orienteering())+
+  annotation_scale(location = "bl", width_hint = 0.2)+
+  theme_bw()
+```
+
