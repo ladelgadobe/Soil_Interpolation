@@ -69,7 +69,7 @@ def concordance_correlation_coefficient(y_true, y_pred):
 
 # Load data
 file_path = input("Enter the path to the CSV file: ")
-data = pd.read_csv(file_path)
+data = pd.read_csv(file_path,sep=";")
 variable = input("Enter the name of the column containing the variable of interest: ")
 data = data.dropna(subset=[variable])
 
