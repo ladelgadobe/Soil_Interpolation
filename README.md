@@ -15,7 +15,8 @@ This repository provides implementations of classical interpolation methods used
 
 ###  R scripts   <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/r/r-original.svg" width="20"/>
 - Ordinary Kriging (OK) – fitted with Method of Moments (MoM)  
-- Ordinary Kriging (OK) – fitted with Restricted Maximum Likelihood (REML)  
+- Ordinary Kriging (OK) – fitted with Restricted Maximum Likelihood (REML)
+- Kriging with External Drift (KED) 
 - Random Forest Spatial Interpolation (RFSI) – model that incorporates, as covariates, the values of the n nearest observations and their distances to the prediction location. The idea (according to Sekulić et al., 2020) is that neighboring points carry direct spatial information that can improve prediction.  
 - Random Forest Spatial (RFE) – using geographic coordinates (x, y) as covariates  
 - Support Vector Machine (SVM)  
