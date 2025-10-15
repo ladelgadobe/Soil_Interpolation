@@ -1,6 +1,9 @@
 ---
 title: "Ordinary Kriging with REML"
-author: "Laura Delgado Bejarano"
+author: |
+  Laura Delgado Bejarano  
+  Agricultural Engineer, Universidad Nacional de Colombia  
+  Master’s Candidate, University of Campinas (UNICAMP)
 date: "2024-10-22"
 output:
   pdf_document: default
@@ -10,7 +13,7 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 # --- Directory settings (edit these paths as needed) ---
-WORK_DIR <- "G:/Mi unidad/02_Maestria/01_Projeito"  # <- edit if needed
+WORK_DIR <- ".../word_dir"  # <- edit if needed
 WORK_DIR <- normalizePath(WORK_DIR, winslash = "/", mustWork = TRUE)  # standardize slashes on Windows
 knitr::opts_knit$set(root.dir = WORK_DIR)  # make this the working dir for all chunks
 ```
@@ -27,12 +30,12 @@ cat("\014")       # Clear console
 # Libraries 
 Installing and loading the libraries that are going to be used 
 
-```{r,libraries,echo=FALSE}
+```{r,libraries,echo=T}
 # Libraries: install if missing, then load
 pkgs <- c(
   "sp", "gstat", "ggspatial", "raster", "ggplot2", "gridExtra",
   "ggstar", "mapview", "terra", "sf", "akima", "automap",
-  "paletteer", "viridis", "hydroGOF","geoR"
+  "paletteer", "viridis", "hydroGOF","geoR","epiR"
 )
 
 # Install any missing packages (first run on a new machine)
@@ -53,7 +56,7 @@ invisible(lapply(pkgs, function(p) {
 ## Load polygon of the area of study
 
 ```{r,poly}
-poly <- st_read("00_Cartobase/01_Contornos/01_Paulinia/Contorno_Paulinia.shp") 
+poly <- st_read("../Contour_area.shp") 
 plot(poly)
 poly_sf <- st_zm(poly)
 ```
@@ -77,16 +80,16 @@ Here is important to know if the csv are separed by , or ; and change it if nece
 
 
 ```{r,Data}
-#cargas los datos
-original = data.frame(read.csv(file = "02_Cenarios_amostrais/04_CSVs/Paulinia_0.2am_cada1ha.csv",
+#Load dataset
+original = data.frame(read.csv(file = ".../Dataset.csv",
                                header = TRUE, sep = ';'))
 head(original)
 dados = original[,c(7,8,6)] # select columns of interest (x,y,z)
 head(dados)
 dados = na.omit(dados)
-names(dados) = c( "x", "y", "Ar") # ensure names x, y, variable 
+names(dados) = c( "x", "y", "Z") # ensure names x, y, variable 
 sp::coordinates(dados) = ~x+y 
-sp::bubble(dados, "Ar") 
+sp::bubble(dados, "Z") 
 ```
 ## Geostatistics 
 
@@ -94,21 +97,23 @@ Adjust the experimental semivariogram - first using MoM to get the initial value
 
 ```{r,semivar_mom}
 # Experimental variogram (MoM) and geodata prep
-Variable<-"Ar"
+Variable<-"Z"
 data_geo <- as.geodata(dados, data.col = which(names(dados) == Variable))
 
 # Build gstat object for the target variable
-g = gstat(formula = Ar ~ 1, data=dados) #Change name of variable 
+g = gstat(formula = Z ~ 1, data=dados) #Change name of variable 
 # Useful distance helpers to design variogram cutoff/lag width
 C<-print(max(dist(dados@coords))/2);C #Cutoff
 W<-print(min(dist(dados@coords)));W #Width
 var_exp = gstat::variogram(g, cutoff=C, width=89, cressie=F) 
 plot(var_exp)
 
+#vgm(psill(c),model,range(a),nugget(co))
+
 # Initial MoM fits (keep if you want to compare visually)
-fit.sph1   <- fit.variogram(var_exp, vgm(11800, "Sph", 300, 200))
-fit.exp1   <- fit.variogram(var_exp, vgm(11800, "Exp", 300, 200))
-fit.gauss1 <- fit.variogram(var_exp, vgm(11800, "Gau", 300, 200))
+fit.sph1   <- fit.variogram(var_exp, vgm(c, "Sph", a, co))
+fit.exp1   <- fit.variogram(var_exp, vgm(c, "Exp", a, c))
+fit.gauss1 <- fit.variogram(var_exp, vgm(c, "Gau", a, co))
 
 plot(var_exp, fit.sph1)
 plot(var_exp, fit.exp1)
@@ -118,7 +123,7 @@ plot(var_exp, fit.gauss1)
 # Cross-validation per model
 
 # Spherical model CV
-xvalid.sph <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.sph1)
+xvalid.sph <- gstat::krige.cv(Z ~ 1, locations = dados, model = fit.sph1)
 xvalid_df_sp <- as.data.frame(xvalid.sph)
 lm_sph <- lm(xvalid.sph$var1.pred ~ xvalid.sph$observed)
 
@@ -128,7 +133,7 @@ rmse_sph <- hydroGOF::rmse(xvalid.sph$var1.pred, xvalid.sph$observed)  # RMSE
 slope_sph <- lm_sph$coefficients[2]           # regression slope
 
 # Exponential model CV
-xvalid.exp <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.exp1)
+xvalid.exp <- gstat::krige.cv(Z ~ 1, locations = dados, model = fit.exp1)
 xvalid_df_ex <- as.data.frame(xvalid.exp)
 lm_exp <- lm(xvalid.exp$var1.pred ~ xvalid.exp$observed)
 
@@ -138,7 +143,7 @@ rmse_exp <- hydroGOF::rmse(xvalid.exp$var1.pred, xvalid.exp$observed)
 slope_exp <- lm_exp$coefficients[2]
 
 # Gaussian model CV
-xvalid.gau <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.gauss1)
+xvalid.gau <- gstat::krige.cv(Z ~ 1, locations = dados, model = fit.gauss1)
 xvalid_df_ga <- as.data.frame(xvalid.gau)
 lm_gau <- lm(xvalid.gau$var1.pred ~ xvalid.gau$observed)
 
@@ -248,51 +253,47 @@ Cross validation to select the model to kriging
 # Cross-validation to select model
 # -------------------------------
 
-# Spherical model CV
-xvalid.sph <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.sph)
-xvalid_df_sp <- as.data.frame(xvalid.sph)
-lm_sph <- lm(xvalid.sph$var1.pred ~ xvalid.sph$observed)
+# Spherical
+xvalid.sph <- gstat::krige.cv(Z ~ 1, locations = dados, model = fit.sph)
+lm_sph     <- lm(xvalid.sph$var1.pred ~ xvalid.sph$observed)
+r2_sph     <- summary(lm_sph)$r.squared
+rmse_sph   <- hydroGOF::rmse(xvalid.sph$var1.pred, xvalid.sph$observed)
+slope_sph  <- lm_sph$coefficients[2]
+ccc_sph    <- as.numeric(epiR::epi.ccc(xvalid.sph$var1.pred, xvalid.sph$observed)$rho.c["est"])
 
-# Metrics
-r2_sph    <- summary(lm_sph)$r.squared      # R²
-rmse_sph  <- hydroGOF::rmse(xvalid.sph$var1.pred, xvalid.sph$observed)  # RMSE
-slope_sph <- coef(lm_sph)[2]                # regression slope
+# Exponential 
+xvalid.exp <- gstat::krige.cv(Z ~ 1, locations = dados, model = fit.exp)
+lm_exp     <- lm(xvalid.exp$var1.pred ~ xvalid.exp$observed)
+r2_exp     <- summary(lm_exp)$r.squared
+rmse_exp   <- hydroGOF::rmse(xvalid.exp$var1.pred, xvalid.exp$observed)
+slope_exp  <- lm_exp$coefficients[2]
+ccc_exp    <- as.numeric(epiR::epi.ccc(xvalid.exp$var1.pred, xvalid.exp$observed)$rho.c["est"])
 
-# Exponential model CV
-xvalid.exp <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.exp)
-xvalid_df_ex <- as.data.frame(xvalid.exp)
-lm_exp <- lm(xvalid.exp$var1.pred ~ xvalid.exp$observed)
-
-# Metrics
-r2_exp    <- summary(lm_exp)$r.squared
-rmse_exp  <- hydroGOF::rmse(xvalid.exp$var1.pred, xvalid.exp$observed)
-slope_exp <- coef(lm_exp)[2]
-
-# Gaussian model CV
-xvalid.gau <- gstat::krige.cv(Ar ~ 1, locations = dados, model = fit.gauss)
-xvalid_df_ga <- as.data.frame(xvalid.gau)
-lm_gau <- lm(xvalid.gau$var1.pred ~ xvalid.gau$observed)
-
-# Metrics
-r2_gau    <- summary(lm_gau)$r.squared
-rmse_gau  <- hydroGOF::rmse(xvalid.gau$var1.pred, xvalid.gau$observed)
-slope_gau <- coef(lm_gau)[2]
+# Gaussian
+xvalid.gau <- gstat::krige.cv(Z ~ 1, locations = dados, model = fit.gauss)
+lm_gau     <- lm(xvalid.gau$var1.pred ~ xvalid.gau$observed)
+r2_gau     <- summary(lm_gau)$r.squared
+rmse_gau   <- hydroGOF::rmse(xvalid.gau$var1.pred, xvalid.gau$observed)
+slope_gau  <- lm_gau$coefficients[2]
+ccc_gau    <- as.numeric(epiR::epi.ccc(xvalid.gau$var1.pred, xvalid.gau$observed)$rho.c["est"])
 
 # --------------------------------------------
 # Build CV summary table and pick the best fit
 # --------------------------------------------
 
-cv_tbl <- data.frame(
-  Model = c("Sph", "Exp", "Gau"),
-  R2    = c(r2_sph, r2_exp, r2_gau),
-  RMSE  = c(rmse_sph, rmse_exp, rmse_gau),
-  Slope = c(slope_sph, slope_exp, slope_gau),
-  stringsAsFactors = FALSE
-)
+df.r2    <- data.frame(r2_sph, r2_exp, r2_gau)
+df.rmse  <- data.frame(rmse_sph, rmse_exp, rmse_gau)
+df.slope <- data.frame(slope_sph, slope_exp, slope_gau)
+df.ccc   <- data.frame(ccc_sph, ccc_exp, ccc_gau)
 
-# Print table sorted by RMSE (ascending = better)
-cv_tbl_sorted <- cv_tbl[order(cv_tbl$RMSE), ]
-print(cv_tbl_sorted, row.names = FALSE)
+
+temp <- data.frame(cbind(t(df.r2), t(df.rmse), t(df.slope), t(df.ccc)))
+colnames(temp) <- c("R2", "RMSE", "Slope", "LCCC")
+
+rnames <- gsub("r2_", "", rownames(temp))
+rownames(temp) <- rnames
+
+print(temp)
 
 
 ```
@@ -336,7 +337,7 @@ Doing the kriging with the selected model
 proj4string(dados) <- CRS("+init=epsg:32723")
 proj4string(dados)
 
-mapa = krige(Ar ~ 1, dados, grid, model = fit.gauss)
+mapa = krige(Z ~ 1, dados, grid, model = fit.gauss)
 plot(mapa)
 
 
@@ -346,7 +347,7 @@ Exporting the raster
 ```{r,export}
 mapaRaster <- raster(mapa)
 
-filename<-'13_GitHub/Ar_OK_0.2cada1_Paulinia_REML.tiff'
+filename<-'.../Final_map.tiff'
 writeRaster(mapaRaster, filename , format = 'GTiff', overwrite = T)
 ```
 
