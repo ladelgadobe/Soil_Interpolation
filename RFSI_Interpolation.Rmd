@@ -1,0 +1,263 @@
+---
+title: "Random Forest Interpolation (RFSI)"
+author: "Laura Delgado Bejarano  \nAgricultural Engineer, Universidad Nacional de
+  Colombia  \nMaster’s Candidate, University of Campinas (UNICAMP)\n"
+date: "2024-10-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+Random forest Spatial interpolation based in Sekulic et al 2020 http://dx.doi.org/10.3390/rs12101687 
+
+# Cleaning the space
+
+```{r}
+rm(list = ls())   # Clear all objects
+graphics.off()    # Close graphics devices
+cat("\014")       # Clear console
+```
+
+```{r setup, include=T}
+knitr::opts_chunk$set(echo = TRUE)
+# --- Directory settings (edit these paths as needed) ---
+WORK_DIR <- "...proj_dir/" # <- edit if needed
+WORK_DIR <- normalizePath(WORK_DIR, winslash = "/", mustWork = TRUE) 
+knitr::opts_knit$set(root.dir = WORK_DIR)  # make this the working dir for all chunks
+
+```
+
+# Libraries 
+
+Installing and loading the packages that are going to be used 
+
+```{r,echo=T}
+# cargar/instalar librerías
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  meteo,        # RF spatial Sekulic
+  sp, gstat,ggspatial,raster, ggplot2,gridExtra,ggstar,
+  mapview,terra,sf, akima,automap,paletteer,
+  viridis,dplyr,mlr,parallelMap,parallel,ggthemes
+)
+
+```
+
+# Loading the data 
+
+## Load polygon of the area of study
+
+```{r,poly,fig.width=4,fig.height=4}
+poly <- st_read("...Contourn_area.shp") 
+
+plot(poly)
+poly_sf <- st_zm(poly)
+```
+
+## Create a clean and empty grid to interpolate 
+
+```{r,grid,fig.width=4,fig.height=4}
+r  <- raster(poly_sf, res = 5)         # base grid resolution (meters)
+rp <- rasterize(poly_sf, r, 0)         # empty raster within polygon
+grid <- as(rp, "SpatialPixelsDataFrame")
+plot(grid)
+
+proj4string(grid) <-CRS("+init=epsg:32723") #CRS area
+proj4string(grid)
+
+
+```
+
+## Load the csv with the data
+
+Here is important to know if the csv are separed by , or ; and change it if necessary
+
+```{r,1cada1_Argila}
+
+original = data.frame(read.csv(file = ".../dataset.csv", header = TRUE, sep = ';'))
+head(original)
+dados = original[,c(7,8,2)] #select the columns x,y and obj for interpolation
+head(dados)
+dados = na.omit(dados)
+names(dados) = c( "x", "y", "obj") #change names
+sp::coordinates(dados) = ~x+y 
+sp::bubble(dados, "obj") 
+```
+
+#Covariates
+
+Load covariates and resample with bilinear method in the spatial resolution wanted
+```{r}
+# Covariates
+# Load covariates and resample with bilinear method at desired spatial resolution
+
+# List auxiliary rasters (.tif/.tiff)
+covariates <- list.files(
+  path = ".../covariate_folder",
+  pattern = "\\.tif(f)?$",
+  full.names = TRUE)
+
+# Use elevation raster as template if available, otherwise the first raster
+elev_idx <- grep("Elevacao_", basename(covariates), ignore.case = TRUE)
+template_path <- if (length(elev_idx) > 0) covariates[elev_idx[1]] else covariates[1]
+reference_raster <- raster::raster(template_path)
+raster::res(reference_raster) <- 5 #Pixel size
+
+# Read and resample rasters
+all_rasters <- lapply(covariates, raster::raster)
+resampled   <- raster::stack(lapply(all_rasters, function(r) 
+  raster::resample(r, reference_raster, "bilinear")
+))
+
+# Rename layers
+names(resampled) <- paste0("Cov", seq_len(raster::nlayers(resampled)))
+
+# Quick plot
+plot(resampled)
+
+```
+##Extraction 
+
+Extraction of auxiliary information co-located with soil sampling points for data
+
+```{r}
+Values<-raster::extract(resampled,dados)
+head(Values)
+dados@data<-cbind(dados@data,Values)
+head(dados)
+
+#Combine with interpolation grid 
+grid_cov <- raster::extract(resampled, grid)
+grid@data  <- cbind(grid@data, grid_cov) 
+
+```
+
+# Random Forest
+
+##Hiperparameters
+
+```{r,results='hide', message=FALSE, warning=FALSE}
+dados_df <- as.data.frame(dados)
+regr.task <- makeRegrTask(data = dados_df, target = "obj")
+rf_learner <- makeLearner(
+  "regr.randomForest",
+  predict.type = "response",
+  par.vals = list(importance = TRUE)
+)
+
+n_feats   <- mlr::getTaskNFeats(regr.task)
+mtry_max  <- max(1, n_feats)
+
+rf_param <- makeParamSet(
+  makeIntegerParam("ntree",    lower = 200,  upper = 5000),
+  makeIntegerParam("mtry",     lower = 1,    upper = mtry_max),
+  makeIntegerParam("nodesize", lower = 1,    upper = 50)
+)
+
+ctrl <- makeTuneControlRandom(maxit = 200)
+cv   <- makeResampleDesc("CV", iters = 5)
+measure_list <- list(mlr::rmse)
+
+n_cores<-parallel::detectCores()-1
+set.seed(10)
+t0 <- Sys.time()
+
+rf_tune <- tuneParams(
+  learner     = rf_learner,
+  task        = regr.task,
+  resampling  = cv,
+  par.set     = rf_param,
+  control     = ctrl,
+  measures    = measure_list,
+  show.info   = TRUE
+)
+
+tuning_time <- Sys.time() - t0
+print(rf_tune)
+print(tuning_time)
+
+parallelStop()
+
+
+
+```
+##Parameters
+```{r}
+print(tuning_time)
+numtrees_best   <- rf_tune$x$ntree;numtrees_best
+mtry_best       <- rf_tune$x$mtry;mtry_best
+nodesize_best   <- rf_tune$x$nodesize;nodesize_best
+```
+## Training
+Training the RFSI
+```{r,rfsi }
+
+dados <- st_as_sf(dados)
+fm.RFSI <- as.formula("obj~Cov1+Cov2+Cov3+Cov4+Cov5") # Reeplace with covariates
+
+
+rfsi_model <- rfsi(formula = fm.RFSI,
+                   data = dados,
+                   zero.tol = 0,
+                   n.obs = 8, # number of nearest observations
+                   # s.crs = st_crs(data), # nedded only if the coordinates are lon/lat (WGS84)
+                   # p.crs = st_crs(data), # nedded only if the coordinates are lon/lat (WGS84)
+                   cpus = detectCores()-1,
+                   progress = TRUE,
+                   # ranger parameters
+                   importance = "impurity",
+                   seed = 315,
+                   num.trees = numtrees_best, #Values in the last chunk
+                   mtry = mtry_best,#Values in the last chunk
+                   splitrule = "variance",
+                   min.node.size = nodesize_best, #nodesize #Values in the last chunk
+                   sample.fraction = 0.95,
+                   quantreg = FALSE) # quantile regression model
+
+rfsi_model
+```
+Predicting 
+```{r,rf_pred}
+newdata <- resampled
+names(newdata)<-c("Cov1","Cov2","Cov3","Cov4","Cov5")
+newdata<-rast(newdata)
+
+rfsi_prediction <- pred.rfsi(model = rfsi_model,
+                             data = dados,
+                             obs.col = "obj",
+                             newdata = newdata,
+                             output.format = "SpatRaster", # "sf", # "SpatVector", 
+                             zero.tol = 0,
+                             cpus = detectCores()-1, 
+                             progress = TRUE,
+                             soil3d=FALSE
+)
+
+summary(rfsi_prediction)
+
+plot(rfsi_prediction)
+```
+## Exporting the raster
+
+```{r,export}
+mapaRaster <- raster(rfsi_prediction)
+
+filename<-'.../interpolation_result.tiff'
+writeRaster(mapaRaster, filename , format = 'GTiff', overwrite = T)
+```
+
+##Graphic with ggplot
+
+```{r,plotting,fig.width=5, fig.height=4}
+rfsi_df <- as.data.frame(rfsi_prediction, xy = TRUE)
+ggplot() + 
+  geom_raster(data = as.data.frame(rfsi_df), aes(fill = pred, x = x, y = y)) +
+  scale_fill_paletteer_c("ggthemes::Red-Gold") +
+  # labs(fill = expression('Argila (g*kg'^-1*')'))+
+  annotation_north_arrow(which_north = "grid",height = unit(1, "cm"),
+                         width = unit(0.9, "cm"),
+                         pad_x = unit(0.5, "cm"),
+                         pad_y = unit(7, "cm"),
+                         style=north_arrow_fancy_orienteering())+
+  annotation_scale(location = "bl", width_hint = 0.2)+
+  theme_bw()
+```
