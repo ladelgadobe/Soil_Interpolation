@@ -3,7 +3,9 @@ title: "Ordinary Kriging, Method of Moments (MoM)"
 author: |
   Laura Delgado Bejarano  
   Agricultural Engineer, Universidad Nacional de Colombia  
-  Master’s Candidate, University of Campinas (UNICAMP)
+  Master’s Candidate, University of Campinas (UNICAMP)  
+  PhD. Agda L. G. Oliveira
+
 date: "2024-10-22"
 output:
   pdf_document: default
