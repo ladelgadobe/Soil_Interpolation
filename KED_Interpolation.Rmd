@@ -13,7 +13,7 @@ output:
 ```{r setup, include=T}
 knitr::opts_chunk$set(echo = TRUE)
 # --- Directory settings (edit these paths as needed) ---
-WORK_DIR <- "G:/Mi unidad/02_Maestria/01_Projeito/" # <- edit if needed
+WORK_DIR <- ".../projectdir/" # <- edit if needed
 WORK_DIR <- normalizePath(WORK_DIR, winslash = "/", mustWork = TRUE)  # standardize slashes on Windows
 knitr::opts_knit$set(root.dir = WORK_DIR)  # make this the working dir for all chunks
 
@@ -47,7 +47,7 @@ cat("\014")       # Clear console
 ## Load polygon of the area of study
 
 ```{r,poly}
-poly <- sf::st_read("00_Cartobase/01_Contornos/01_Paulinia/Contorno_Paulinia.shp")
+poly <- sf::st_read(".../Contourn_area.shp")
 
 plot(poly)
 poly_sf <- st_zm(poly)
@@ -68,30 +68,30 @@ proj4string(grid)
 ## Load the csv with the data
 Here is important to know if the csv are separed by , or ; and change it if necessary
 ```{r,1cada1_Argila}
-original = data.frame(read.csv(file = "02_Cenarios_amostrais/04_CSVs/Paulinia_1am_cada1ha.csv",
+original = data.frame(read.csv(file = ".../dataset.csv",
  header = TRUE, sep = ';'))
  head(original)
  dados = original[,c(7,8,6)] # select columns of interest (x,y,z)
  head(dados)
  dados = na.omit(dados)
- names(dados) = c( "x", "y", "Ar") # ensure names x, y, variable
+ names(dados) = c( "x", "y", "Z") # ensure names x, y, variable
  sp::coordinates(dados) = ~x+y
- sp::bubble(dados, "Ar")
+ sp::bubble(dados, "Z")
  
 ```
 
 #Covariates
 
-Load covariates and resample with bilinear method in the spatial resolution wanted 
+Load covariates and resample with bilinear method in the spatial resolution wanted
 ```{r}
 # List auxiliary rasters (.tif/.tiff)
 covariates <- list.files(
-  path = "01_Covariaveis/01_Paulinia/04_Stack",
+  path = ".../Covariates_folder",
   pattern = "\\.tif(f)?$",
   full.names = TRUE)
 
 # Use elevation raster as template if available, otherwise the first raster
-elev_idx <- grep("Elevacao_", basename(covariates), ignore.case = TRUE)
+elev_idx <- grep("Raster1", basename(covariates), ignore.case = TRUE)
 template_path <- if (length(elev_idx) > 0) covariates[elev_idx[1]] else covariates[1]
 reference_raster <- raster::raster(template_path)
 raster::res(reference_raster) <- 5
@@ -106,7 +106,7 @@ standardized <- raster::stack(lapply(1:raster::nlayers(resampled), function(i) {
   r[] <- v; r
 }))
 
-names(standardized) <- c("CEa","Elev","HSI","NDCI","SBI")
+names(standardized) <- c("Cov1","Cov2","Cov3","Cov4","Covn")
 plot(standardized)
 
 ```
@@ -133,7 +133,7 @@ The formula is going to have Z~Cov1+Cov2...+Covn
 ```{r,semivar_Ar_1cada2}
 # Build gstat object
 # Here is important to change to the variable that is going to be interpolated 
-g = gstat(formula = Ar ~ CEa+Elev+HSI+NDCI+SBI, data=dados) 
+g = gstat(formula = Z ~ Cov1+Cov2+Cov3+Cov4+Covn, data=dados) 
 
 # Distance helpers
 print(max(dist(dados@coords))/2) #Cutoff - half of the max distance 
@@ -142,17 +142,17 @@ print(min(dist(dados@coords))) #Min distance to define the lags (width)
 var_exp = gstat::variogram(g, cutoff=905.09, width=80, cressie=F) 
 plot(var_exp)
 
-var(dados$Ar) # Data variance (should be close to variogram sill)
+var(dados$Z) # Data variance (should be close to variogram sill)
 #sph
-fit.sph = fit.variogram(var_exp, vgm(2000, "Sph", 200, 2000)) 
+fit.sph = fit.variogram(var_exp, vgm(c, "Sph", a, co)) 
 plot(var_exp, fit.sph)
 
 #exp 
-fit.exp = fit.variogram(var_exp, vgm(2000, "Exp", 200, 2000)) 
+fit.exp = fit.variogram(var_exp, vgm(c, "Exp", a, co)) 
 plot(var_exp, fit.exp)
 
 #gau
-fit.gauss = fit.variogram(var_exp, vgm(2500, "Gau", 200,1500)) 
+fit.gauss = fit.variogram(var_exp, vgm(c, "Gau", a,co)) 
 plot(var_exp, fit.gauss) 
 
 ```
@@ -163,7 +163,7 @@ Cross validation to select the best fit model to krige
 
 ```{r}
 # Spherical
-xvalid.sph <- gstat::krige.cv(Ar ~ CEa+Elev+HSI+NDCI+SBI, locations = dados, model = fit.sph)
+xvalid.sph <- gstat::krige.cv(Z ~ Cov1+Cov2+Cov3+Cov4+Covn, locations = dados, model = fit.sph)
 lm_sph     <- lm(xvalid.sph$var1.pred ~ xvalid.sph$observed)
 r2_sph     <- summary(lm_sph)$r.squared
 rmse_sph   <- hydroGOF::rmse(xvalid.sph$var1.pred, xvalid.sph$observed)
@@ -171,7 +171,7 @@ slope_sph  <- lm_sph$coefficients[2]
 ccc_sph    <- as.numeric(epiR::epi.ccc(xvalid.sph$var1.pred, xvalid.sph$observed)$rho.c["est"])
 
 # Exponential 
-xvalid.exp <- gstat::krige.cv(Ar ~ CEa+Elev+HSI+NDCI+SBI, locations = dados, model = fit.exp)
+xvalid.exp <- gstat::krige.cv(Z ~ Cov1+Cov2+Cov3+Cov4+Covn, locations = dados, model = fit.exp)
 lm_exp     <- lm(xvalid.exp$var1.pred ~ xvalid.exp$observed)
 r2_exp     <- summary(lm_exp)$r.squared
 rmse_exp   <- hydroGOF::rmse(xvalid.exp$var1.pred, xvalid.exp$observed)
@@ -179,7 +179,7 @@ slope_exp  <- lm_exp$coefficients[2]
 ccc_exp    <- as.numeric(epiR::epi.ccc(xvalid.exp$var1.pred, xvalid.exp$observed)$rho.c["est"])
 
 # Gaussian
-xvalid.gau <- gstat::krige.cv(Ar ~ CEa+Elev+HSI+NDCI+SBI, locations = dados, model = fit.gauss)
+xvalid.gau <- gstat::krige.cv(Z ~ Cov1+Cov2+Cov3+Cov4+Covn, locations = dados, model = fit.gauss)
 lm_gau     <- lm(xvalid.gau$var1.pred ~ xvalid.gau$observed)
 r2_gau     <- summary(lm_gau)$r.squared
 rmse_gau   <- hydroGOF::rmse(xvalid.gau$var1.pred, xvalid.gau$observed)
@@ -244,7 +244,7 @@ Doing the kriging
 proj4string(dados) <- CRS("+init=epsg:32723")
 proj4string(dados)
 
-mapa = krige(Ar ~ CEa+Elev+HSI+NDCI+SBI, locations = dados, newdata=grid,model = fit.sph)
+mapa = krige(Z ~ Cov1+Cov2+Cov3+Cov4+Covn, locations = dados, newdata=grid,model = fit.sph)
 plot(mapa)
 ```
 
@@ -253,7 +253,7 @@ Exporting the raster
 ```{r,export}
 mapaRaster <- raster(mapa)
 
-filename<-"G:/Mi unidad/02_Maestria/01_Projeito/13_GitHub/Ar_KED_1cada1_Paulinia.tiff"
+filename<-".../final_map.tiff"
 writeRaster(mapaRaster, filename , format = 'GTiff', overwrite = T)
 
 ```
